@@ -6,7 +6,7 @@ CC_FLAG=-Wall
  
 PRG=rinetd
 OBJ=src/match.o \
-    src/rinetd.o
+    src/rinetd_epoll.o
  
 $(PRG):$(OBJ)
 	$(CC) $(INC) $(LIB) -o $@ $(OBJ)
