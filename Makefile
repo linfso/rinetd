@@ -1,12 +1,12 @@
 INC=
 LIB=
  
-CC=gcc
+CC=g++
 CC_FLAG=-Wall
  
 PRG=rinetd
 OBJ=src/match.o \
-    src/rinetd_epoll.o
+    src/rinetd_epo.o
  
 $(PRG):$(OBJ)
 	$(CC) $(INC) $(LIB) -o $@ $(OBJ)
