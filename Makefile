@@ -1,7 +1,7 @@
 INC=
 LIB=
  
-CC=CC
+CC=gcc
 CC_FLAG=-Wall
  
 PRG=rinetd
