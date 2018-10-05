@@ -52,6 +52,9 @@ arrays correctly when reallocating memory to
 accommodate more connections.  Thanks to 
 Sam Hocevar.
 
-version 0.70: linux use epoll
+Version 0.63: modify by  Salvatore Sanfilippo
+
+Version 0.64: optimze By Alan Shen
+
 
 
