@@ -1,4 +1,4 @@
-#define VERSION "0.63"
+#define VERSION "0.62"
 
 #ifdef WIN32
 #include <windows.h>
@@ -14,7 +14,6 @@
 #include <errno.h>
 #define INVALID_SOCKET (-1)
 #include <sys/time.h>
-#include "ae.h"
 #endif /* WIN32 */
 
 #include <stdio.h>
@@ -95,7 +94,6 @@ void Sleep(long ms)
 #include "match.h"
 
 SOCKET *seFds = 0;
-int *seIdx = 0;
 /* In network order, for network purposes */
 struct in_addr *seLocalAddrs = 0;
 unsigned short *seLocalPorts = 0;
@@ -116,9 +114,7 @@ int *seDenyRulesTotal = 0;
 int globalDenyRules = 0;
 
 SOCKET *reFds = 0;
-int    *reFdsIdx = 0;
 SOCKET *loFds = 0;
-int    *loFdsIdx = 0;
 unsigned char *reAddresses = 0;
 int *coInputRPos = 0;
 int *coInputWPos = 0;
@@ -146,19 +142,6 @@ char *logFileName = 0;
 char *pidLogFileName = 0;
 int logFormatCommon = 0;
 FILE *logFile = 0;
-
-int maxClients = 1024*10;
-
-void vAcceptHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask);
-void vRemoteReadHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask);
-void vRemoteWriteHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask);
-void vLocalReadHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask);
-void vLocalWriteHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask);
 
 /* If 'newsize' bytes can be allocated, *data is set to point
 	to them, the previous data is copied, and 1 is returned. 
@@ -238,9 +221,6 @@ int readArgs (int argc,
 	char **argv,
 	RinetdOptions *options);
 
-
-aeEventLoop *phEventLoop=NULL;
-
 int main(int argc, char *argv[])
 {
 	WSADATA wsaData;
@@ -263,22 +243,10 @@ int main(int argc, char *argv[])
 			signal(SIGHUP, hup);
 #endif /* WIN32 */
 			signal(SIGTERM, term);
-			
-			/**/
-			phEventLoop = aeCreateEventLoop(maxClients);
-			if(phEventLoop == NULL)
-			{
-				fprintf(stderr,"aeCreateEventLoop return NULL\n");
-				exit(1);
-			}
 			initArrays();
 			readConfiguration();
 			RegisterPID();
-			//selectLoop();
-			
-			aeMain(phEventLoop);
-	
-			aeDeleteEventLoop(phEventLoop);
+			selectLoop();
 #ifndef WIN32
 #ifndef DEBUG
 		} else {
@@ -304,7 +272,6 @@ void readConfiguration(void)
 	int i;
 	int ai;
 	int di;
-	int iRet;
 	if (seFds) {
 		/* Close existing server sockets. */
 		for (i = 0; (i < seTotal); i++) {
@@ -326,7 +293,6 @@ void readConfiguration(void)
 		free(seDenyRules);
 		free(seAllowRulesTotal);
 		free(seDenyRulesTotal);
-		free(seIdx); 
 	}
 	seTotal = 0;
 	if (allowRules) {
@@ -380,12 +346,7 @@ void readConfiguration(void)
 			allowRulesTotal++;
 		} else if (!strcmp(t, "deny")) {		
 			denyRulesTotal++;
-		}
-		/** 
-		else if(!strcmp(t, "maxclients")){ 
-			//
-		}**/
-		else {	
+		} else {	
 			/* A regular forwarding rule */
 			seTotal++;	
 		}
@@ -393,10 +354,6 @@ void readConfiguration(void)
 	fclose(in);
 	seFds = (SOCKET *) malloc(sizeof(int) * seTotal);	
 	if (!seFds) {
-		goto lowMemory;
-	}
-	seIdx = (int *)malloc(sizeof(int) * seTotal);
-	if (!seIdx) {
 		goto lowMemory;
 	}
 	seLocalAddrs = (struct in_addr *) malloc(sizeof(struct in_addr) *
@@ -570,20 +527,7 @@ void readConfiguration(void)
 			strcpy(pidLogFileName, nt);
 		} else if (!strcmp(bindAddress, "logcommon")) {
 			logFormatCommon = 1;
-		}
-		/** 
-		else if (!strcmp(bindAddress, "maxclients")){
-			char *nt = strtok(0, " \t\r\n");
-			//printf("%s%d:maxclients [%s]\n",__FILE__,__LINE__,nt);
-			if (!nt) {
-				fprintf(stderr, "rinetd: no maxclient "
-					"specified on line %d, default 1024*10.\n", lnum);	
-				maxClients = 1024*10;
-				continue;
-			}	
-			maxClients = atoi(nt);
-		}**/
-		else {
+		} else {
 			/* A regular forwarding rule. */
 			bindPortS = strtok(0, " \t\r\n");
 			if (!bindPortS) {
@@ -695,19 +639,6 @@ void readConfiguration(void)
 			}
 			strcpy(seToHosts[i], connectAddress);
 			seToPorts[i] = connectPort;
-			
-			/**/
-			seIdx[i] = i;
-			//printf("%s%d: seFds[%d]=%d\n",__FILE__,__LINE__,i,seFds[i]);
-			iRet = aeCreateFileEvent(phEventLoop,seFds[i],AE_READABLE,vAcceptHandler,&seIdx[i]);
-			if(iRet == AE_ERR)
-			{
-				fprintf(stderr, "%s%d:rinetd: aeCreateFileEvent failed!\n ",__FILE__,__LINE__);
-				closesocket(seFds[i]);
-				seFds[i] = INVALID_SOCKET;
-				continue;
-			}
-			
 			i++;
 			if (i < seTotal) {
 				seAllowRulesTotal[i] = 0;
@@ -762,9 +693,7 @@ void initArrays(void)
 	int j;
 	coTotal = 64;
 	reFds = (SOCKET *) malloc(sizeof(int) * coTotal);
-	reFdsIdx = (int *) malloc(sizeof(int) * coTotal);
 	loFds = (SOCKET *) malloc(sizeof(int) * coTotal);
-	loFdsIdx = (int *)malloc(sizeof(int) * coTotal);
 	coInputRPos = (int *) malloc(sizeof(int) * coTotal);
 	coInputWPos = (int *) malloc(sizeof(int) * coTotal);
 	coOutputRPos = (int *) malloc(sizeof(int) * coTotal);
@@ -780,8 +709,7 @@ void initArrays(void)
 	reAddresses = (unsigned char *) malloc(coTotal * 4);
 	coLog = (int *) malloc(sizeof(int) * coTotal);
 	coSe = (int *) malloc(sizeof(int) * coTotal);
-	if ((!reFds) ||(!reFdsIdx) || (!loFds) || (!loFdsIdx) || 
-		(!coInputRPos) || (!coInputWPos) ||
+	if ((!reFds) || (!loFds) || (!coInputRPos) || (!coInputWPos) ||
 		(!coOutputRPos) || (!coOutputWPos) || 
 		(!coClosed) || (!coClosing) ||
 		(!reClosed) || (!loClosed) ||
@@ -1023,8 +951,6 @@ void handleCloseFromLocal(int i)
 	/* The local end fizzled out, so make sure
 		we're all done with that */
 	PERROR("close from local");
-	aeDeleteFileEvent(phEventLoop,loFds[i],AE_READABLE);
-	aeDeleteFileEvent(phEventLoop,loFds[i],AE_WRITABLE);
 	closesocket(loFds[i]);
 	loClosed[i] = 1;
 	if (!reClosed[i]) {
@@ -1051,8 +977,6 @@ void handleCloseFromRemote(int i)
 	/* The remote end fizzled out, so make sure
 		we're all done with that */
 	PERROR("close from remote");
-	aeDeleteFileEvent(phEventLoop,reFds[i],AE_READABLE);
-	aeDeleteFileEvent(phEventLoop,reFds[i],AE_WRITABLE);
 	closesocket(reFds[i]);
 	reClosed[i] = 1;
 	if (!loClosed[i]) {
@@ -1085,7 +1009,6 @@ void handleAccept(int i)
 	int addrlen;
 	int index = -1;
 	int o;
-	int iRet;
 	SOCKET nfd;
 	addrlen = sizeof(addr);
 	nfd = accept(seFds[i], &addr, &addrlen);
@@ -1118,25 +1041,11 @@ void handleAccept(int i)
 		{
 			goto shortage;
 		}
-		
-		if (!SAFE_REALLOC(&reFdsIdx, sizeof(int) * o,
-			sizeof(SOCKET) * coTotal)) 
-		{
-			goto shortage;
-		}
-		
 		if (!SAFE_REALLOC(&loFds, sizeof(int) * o,
 			sizeof(SOCKET) * coTotal)) 
 		{
 			goto shortage;
 		}
-		
-		if (!SAFE_REALLOC(&loFdsIdx, sizeof(int) * o,
-			sizeof(SOCKET) * coTotal)) 
-		{
-			goto shortage;
-		}
-		
 		if (!SAFE_REALLOC(&coInputRPos, 
 			sizeof(int) * o, sizeof(int) * coTotal)) 
 		{
@@ -1308,27 +1217,9 @@ void handleAccept(int i)
 			if (match(addressText, 
 				denyRules[seDenyRules[i] + j])) {
 				refuse(index, logDenied);
-				return;  //should return here ?? 2015-05-22
 			}
 		}
 	}
-	
-	//add event for reFds[index]
-	reFdsIdx[index] = index;
-	iRet = aeCreateFileEvent(phEventLoop,reFds[index],AE_READABLE,vRemoteReadHandler,&reFdsIdx[index]);
-	if(iRet < 0)
-	{
-		refuse(index, logDenied);
-		return;
-	}	
-	
-	iRet = aeCreateFileEvent(phEventLoop,reFds[index],AE_WRITABLE,vRemoteWriteHandler,&reFdsIdx[index]);
-	if(iRet < 0)
-	{
-		refuse(index, logDenied);
-		return;
-	}
-	
 	/* Now open a connection to the local server.
 		This, too, is nonblocking. Why wait
 		for anything when you don't have to? */
@@ -1344,7 +1235,6 @@ shortage:
 void openLocalFd(int se, int i)
 {
 	int j;
-	int iRet;
 	struct sockaddr_in saddr;
 	loFds[i] = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (loFds[i] == INVALID_SOCKET) {
@@ -1404,33 +1294,6 @@ void openLocalFd(int se, int i)
 			return;
 		}
 	}
-	//add event for loFds[i]
-	loFdsIdx[i] = i;
-	iRet = aeCreateFileEvent(phEventLoop,loFds[i],AE_READABLE,vLocalReadHandler,&loFdsIdx[i]);
-	if(iRet < 0)
-	{
-		PERROR("rinetd: aeCreateFileEvent AE_READABLE");
-		closesocket(loFds[i]);
-		closesocket(reFds[i]);
-		reClosed[i] = 1;
-		loClosed[i] = 1;
-		coClosed[i] = 1;	
-		log(i, coSe[i], logLocalConnectFailed);
-		return;
-	}	
-	
-	iRet = aeCreateFileEvent(phEventLoop,loFds[i],AE_WRITABLE,vLocalWriteHandler,&loFdsIdx[i]);
-	if(iRet < 0)
-	{
-		PERROR("rinetd: aeCreateFileEvent AE_WRITABLE");
-		closesocket(loFds[i]);
-		closesocket(reFds[i]);
-		reClosed[i] = 1;
-		loClosed[i] = 1;
-		coClosed[i] = 1;	
-		log(i, coSe[i], logLocalConnectFailed);
-		return;
-	}
 }
 
 int getAddress(char *host, struct in_addr *iaddr)
@@ -1471,7 +1334,7 @@ void plumber(int s)
 void hup(int s)
 {
 	/* Learn the new rules */
-	///readConfiguration();  TODO here 2015-05-22
+	readConfiguration();
 	/* And reinstall the signal handler */
 	signal(SIGHUP, hup);
 }
@@ -1610,10 +1473,9 @@ int readArgs (int argc,
 			{"conf-file",  1, 0, 'c'},
 			{"help",       0, 0, 'h'},
 			{"version",    0, 0, 'v'},
-			{"maxClients", 0, 0, 'n'},
 			{0, 0, 0, 0}
 		};
-		c = getopt_long (argc, argv, "c:n:shv",
+		c = getopt_long (argc, argv, "c:shv",
 			long_options, &option_index);
 		if (c == -1) {
 			break;
@@ -1627,13 +1489,6 @@ int readArgs (int argc,
 				exit(1);
 			}
 			strcpy(options->conf_file, optarg);
-			break;
-			case 'n':
-			maxClients = atoi(optarg);
-			if(maxClients <= 10)
-			{
-				maxClients = 10;
-			}
 			break;
 			case 'h':
 			printf("Usage: rinetd [OPTION]\n"
@@ -1708,56 +1563,3 @@ void term(int s)
 	exit(0);
 }
 
-void vAcceptHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask)
-{
-	int idx=0;
-	
-	idx = *(int *)clientData;
-	
-	//printf("idx=%d\n",idx);
-	handleAccept(idx);
-	return;
-}
-void vRemoteReadHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask)
-{
-	int idx = 0;
-	idx = *(int *)clientData;
-	
-	handleRemoteRead(idx);
-	
-	return;
-}
-void vRemoteWriteHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask)
-{
-	int idx = 0;
-	idx = *(int *)clientData;
-	
-	handleRemoteWrite(idx);
-	
-	return;
-}
-
-void vLocalReadHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask)
-{
-	int idx = 0;
-	idx = *(int *)clientData;
-	
-	handleLocalRead(idx);
-	
-	return;
-}
-
-void vLocalWriteHandler(struct aeEventLoop *eventLoop, int fd, 
-	void *clientData, int mask)
-{
-	int idx = 0;
-	idx = *(int *)clientData;
-	
-	handleLocalWrite(idx);
-	
-	return;
-}
